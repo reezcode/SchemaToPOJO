@@ -400,11 +400,19 @@
       const inputHelp = document.getElementById("inputHelp");
       let currentMode = "schema";
 
-      function toCamelCase(value) {
+      function splitWords(value) {
         return value
           .replace(/[-\s]+/g, "_")
+          .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+          .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
           .split("_")
-          .filter(Boolean)
+          .filter(Boolean);
+      }
+
+      function toCamelCase(value) {
+        const parts = splitWords(value);
+        if (!parts.length) return "";
+        return parts
           .map((part, index) => {
             const lower = part.toLowerCase();
             return index === 0
@@ -415,8 +423,14 @@
       }
 
       function toPascalCase(value) {
-        const camel = toCamelCase(value);
-        return camel.charAt(0).toUpperCase() + camel.slice(1);
+        const parts = splitWords(value);
+        if (!parts.length) return "";
+        return parts
+          .map((part) => {
+            const lower = part.toLowerCase();
+            return lower.charAt(0).toUpperCase() + lower.slice(1);
+          })
+          .join("");
       }
 
       function singularize(value) {
