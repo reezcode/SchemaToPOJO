@@ -172,12 +172,36 @@
         <div class="pane rounded-3xl p-5 shadow-soft sm:p-6">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 class="text-lg font-bold text-white">Input schema</h2>
-              <p class="mt-1 text-sm text-slate-400">
+              <div class="flex flex-wrap items-center gap-3">
+                <h2 class="text-lg font-bold text-white">Input</h2>
+                <span
+                  id="modeBadge"
+                  class="rounded-full border border-amber-300/30 bg-amber-300/15 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-100"
+                >
+                  Schema
+                </span>
+              </div>
+              <p id="inputHelp" class="mt-1 text-sm text-slate-400">
                 The app reads schema syntax, not raw JSON.
               </p>
             </div>
-            <div class="flex flex-wrap gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <div
+                class="flex items-center gap-1 rounded-xl border border-white/10 bg-slate-950/40 p-1"
+              >
+                <button
+                  id="schemaTab"
+                  class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white"
+                >
+                  Schema
+                </button>
+                <button
+                  id="jsonTab"
+                  class="rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:text-white"
+                >
+                  JSON
+                </button>
+              </div>
               <button
                 id="loadSampleBtn"
                 class="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
@@ -210,6 +234,7 @@
             <textarea
               id="schemaInput"
               spellcheck="false"
+              placeholder="Paste schema syntax here..."
               class="code-scroll min-h-[430px] w-full resize-y bg-transparent px-4 py-4 font-mono text-[13px] leading-6 text-slate-100 outline-none placeholder:text-slate-500 sm:text-sm"
             ></textarea>
           </div>
@@ -341,6 +366,27 @@
     "version": integer
 }`;
 
+      const sampleJson = `{
+  "aad": "example",
+  "batch_request": [
+    {
+      "aad": "example",
+      "ciphertext": "example",
+      "iv": "example",
+      "tag": "example"
+    }
+  ],
+  "ciphertext": "example",
+  "id": "example",
+  "iv": "example",
+  "mode": "CBC",
+  "nae_key_version_header": true,
+  "pad": "PKCS5",
+  "tag": "example",
+  "type": "example",
+  "version": 1
+}`;
+
       const classNameField = document.getElementById("classNameInputField");
       const schemaInput = document.getElementById("schemaInput");
       const output = document.getElementById("output");
@@ -348,6 +394,11 @@
       const fieldCount = document.getElementById("fieldCount");
       const nestedCount = document.getElementById("nestedCount");
       const outputState = document.getElementById("outputState");
+      const schemaTab = document.getElementById("schemaTab");
+      const jsonTab = document.getElementById("jsonTab");
+      const modeBadge = document.getElementById("modeBadge");
+      const inputHelp = document.getElementById("inputHelp");
+      let currentMode = "schema";
 
       function toCamelCase(value) {
         return value
@@ -529,6 +580,110 @@
         return root;
       }
 
+      function inferNode(value) {
+        if (value === null || value === undefined) {
+          return { kind: "type", typeName: "Object" };
+        }
+        if (Array.isArray(value)) {
+          return inferArrayNode(value);
+        }
+        if (typeof value === "object") {
+          return inferObjectNode(value);
+        }
+        if (typeof value === "string") {
+          return { kind: "type", typeName: "string" };
+        }
+        if (typeof value === "number") {
+          return {
+            kind: "type",
+            typeName: Number.isInteger(value) ? "integer" : "number",
+          };
+        }
+        if (typeof value === "boolean") {
+          return { kind: "type", typeName: "boolean" };
+        }
+        return { kind: "type", typeName: "Object" };
+      }
+
+      function inferObjectNode(value) {
+        const properties = Object.keys(value).map((key) => ({
+          key,
+          value: inferNode(value[key]),
+        }));
+        return { kind: "object", properties };
+      }
+
+      function inferArrayNode(value) {
+        if (!value.length) {
+          return {
+            kind: "array",
+            items: { kind: "type", typeName: "Object" },
+          };
+        }
+        const nodes = value
+          .filter((entry) => entry !== null && entry !== undefined)
+          .map((entry) => inferNode(entry));
+        const merged = mergeNodes(nodes);
+        return { kind: "array", items: merged };
+      }
+
+      function mergeNodes(nodes) {
+        if (!nodes.length) {
+          return { kind: "type", typeName: "Object" };
+        }
+        const kinds = new Set(nodes.map((node) => node.kind));
+        if (kinds.size !== 1) {
+          return { kind: "type", typeName: "Object" };
+        }
+        const kind = nodes[0].kind;
+        if (kind === "type") {
+          const typeName = nodes[0].typeName;
+          const sameType = nodes.every((node) => node.typeName === typeName);
+          return sameType ? nodes[0] : { kind: "type", typeName: "Object" };
+        }
+        if (kind === "array") {
+          return {
+            kind: "array",
+            items: mergeNodes(nodes.map((node) => node.items)),
+          };
+        }
+        if (kind === "object") {
+          const propertyMap = new Map();
+          nodes.forEach((node) => {
+            node.properties.forEach((prop) => {
+              if (!propertyMap.has(prop.key)) {
+                propertyMap.set(prop.key, [prop.value]);
+              } else {
+                propertyMap.get(prop.key).push(prop.value);
+              }
+            });
+          });
+          const properties = Array.from(propertyMap.entries()).map(
+            ([key, values]) => ({
+              key,
+              value: mergeNodes(values),
+            }),
+          );
+          return { kind: "object", properties };
+        }
+        return { kind: "type", typeName: "Object" };
+      }
+
+      function parseJsonSchema(input) {
+        let payload;
+        try {
+          payload = JSON.parse(input);
+        } catch (error) {
+          throw new Error(`Invalid JSON: ${error.message}`);
+        }
+
+        const root = inferNode(payload);
+        if (root.kind !== "object") {
+          throw new Error("JSON root must be an object.");
+        }
+        return root;
+      }
+
       function mapType(typeName) {
         const normalized = String(typeName).toLowerCase();
         if (normalized === "string") return "String";
@@ -642,21 +797,82 @@
         };
       }
 
+      function generatePojoFromJson(jsonText, className) {
+        const parsed = parseJsonSchema(jsonText);
+        const emitted = emitClass(className, parsed, 0);
+        return {
+          code: emitted.lines.join("\n"),
+          fieldCount: emitted.fieldCount,
+          nestedCount: emitted.nestedCount,
+        };
+      }
+
+      function getSampleForMode(mode) {
+        return mode === "json" ? sampleJson : sampleSchema;
+      }
+
+      function setMode(mode) {
+        currentMode = mode;
+        const isSchema = mode === "schema";
+        if (schemaTab) {
+          schemaTab.className =
+            "rounded-lg px-3 py-1.5 text-xs font-semibold transition " +
+            (isSchema
+              ? "bg-white/10 text-white"
+              : "text-slate-300 hover:text-white");
+        }
+        if (jsonTab) {
+          jsonTab.className =
+            "rounded-lg px-3 py-1.5 text-xs font-semibold transition " +
+            (!isSchema
+              ? "bg-white/10 text-white"
+              : "text-slate-300 hover:text-white");
+        }
+        if (modeBadge) {
+          modeBadge.textContent = isSchema ? "Schema" : "JSON";
+          modeBadge.className =
+            "rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] " +
+            (isSchema
+              ? "border-amber-300/30 bg-amber-300/15 text-amber-100"
+              : "border-emerald-300/30 bg-emerald-300/15 text-emerald-100");
+        }
+        if (inputHelp) {
+          inputHelp.textContent = isSchema
+            ? "The app reads schema syntax, not raw JSON."
+            : "Paste JSON payloads and the generator will infer types.";
+        }
+        if (schemaInput) {
+          schemaInput.placeholder = isSchema
+            ? "Paste schema syntax here..."
+            : "Paste JSON payload here...";
+          const trimmedInput = schemaInput.value.trim();
+          const otherSample = getSampleForMode(isSchema ? "json" : "schema");
+          if (!trimmedInput || trimmedInput === otherSample) {
+            schemaInput.value = getSampleForMode(mode);
+          }
+        }
+        updateOutput();
+      }
+
       function updateOutput() {
         try {
           const classNameValue = toPascalCase(
             (classNameField && classNameField.value.trim()) ||
               "CryptoEncryptRequest",
           );
-          const result = generatePojo(
-            schemaInput.value.trim() || sampleSchema,
-            classNameValue,
-          );
+          const inputText =
+            schemaInput.value.trim() || getSampleForMode(currentMode);
+          const result =
+            currentMode === "json"
+              ? generatePojoFromJson(inputText, classNameValue)
+              : generatePojo(inputText, classNameValue);
           output.textContent = result.code;
           fieldCount.textContent = `${result.fieldCount} field${result.fieldCount === 1 ? "" : "s"}`;
           nestedCount.textContent = `${Math.max(result.nestedCount, 1)} nested type${Math.max(result.nestedCount, 1) === 1 ? "" : "s"}`;
           statusMessage.textContent =
-            "Conversion succeeded. The schema was mapped into a Java class tree.";
+            currentMode === "json"
+              ? "Conversion succeeded. JSON was inferred into a Java class tree."
+              : "Conversion succeeded. The schema was mapped into a Java class tree.";
           outputState.textContent = "Generated";
           outputState.className = "mt-2 text-sm font-semibold text-emerald-300";
         } catch (error) {
@@ -680,9 +896,16 @@
       }
 
       document.getElementById("loadSampleBtn").addEventListener("click", () => {
-        schemaInput.value = sampleSchema;
+        schemaInput.value = getSampleForMode(currentMode);
         updateOutput();
       });
+
+      if (schemaTab) {
+        schemaTab.addEventListener("click", () => setMode("schema"));
+      }
+      if (jsonTab) {
+        jsonTab.addEventListener("click", () => setMode("json"));
+      }
 
       document
         .getElementById("convertBtn")
@@ -713,8 +936,7 @@
         });
       }
 
-      schemaInput.value = sampleSchema;
-      updateOutput();
+      setMode("schema");
     </script>
   </body>
 </html>
